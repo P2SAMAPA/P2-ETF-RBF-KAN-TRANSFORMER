@@ -1,8 +1,8 @@
 """
-rbf_kan_transformer.py  —  RBF-KAN-Transformer Model (Fixed)
-=============================================================
+rbf_kan_transformer.py  —  RBF-KAN-Transformer Model (Properly Fixed)
+=====================================================================
 
-Fixes: Window parameter now properly affects the data slice and model training.
+Fixes: Window now correctly affects ALL aspects of the model.
 """
 
 import numpy as np
@@ -64,21 +64,30 @@ class RBFKANLayer:
 
 
 class RBFKANTransformer:
-    """Complete RBF-KAN-Transformer model."""
+    """Complete RBF-KAN-Transformer model with window-aware architecture."""
     
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, window: int = 252):
         self.config = config
+        self.window = window
         
-        self.rbf_centers = config.get("rbf_centers", 32)
-        self.rbf_gamma = config.get("rbf_gamma", 1.0)
-        self.kan_hidden_dim = config.get("kan_hidden_dim", 64)
-        self.kan_layers = config.get("kan_layers", 2)
-        self.transformer_dim = config.get("transformer_dim", 64)
-        self.transformer_heads = config.get("transformer_heads", 4)
-        self.transformer_layers = config.get("transformer_layers", 2)
-        self.embedding_dim = config.get("embedding_dim", 64)
-        self.ffn_dim = config.get("ffn_dim", 128)
+        # Scale architecture with window size
+        # Larger windows = more capacity needed
+        scale_factor = max(1, window / 252)
+        
+        self.rbf_centers = int(config.get("rbf_centers", 32) * min(scale_factor, 1.5))
+        self.rbf_gamma = config.get("rbf_gamma", 1.0) / min(scale_factor, 1.5)
+        self.kan_hidden_dim = int(config.get("kan_hidden_dim", 64) * min(scale_factor, 1.5))
+        self.kan_layers = max(2, int(config.get("kan_layers", 2) * min(scale_factor, 1.5)))
+        self.transformer_dim = int(config.get("transformer_dim", 64) * min(scale_factor, 1.5))
+        self.transformer_heads = max(2, int(config.get("transformer_heads", 4) * min(scale_factor, 1.2)))
+        self.transformer_layers = max(2, int(config.get("transformer_layers", 2) * min(scale_factor, 1.3)))
+        self.embedding_dim = int(config.get("embedding_dim", 64) * min(scale_factor, 1.5))
+        self.ffn_dim = int(config.get("ffn_dim", 128) * min(scale_factor, 1.5))
         self.input_dim = 16
+        
+        # Lookback scales with window
+        self.lookback = max(10, int(window * 0.25))
+        self.horizon = max(1, min(10, int(window * 0.02)))
         
         self._build_model()
         self.trained = False
@@ -188,7 +197,10 @@ class RBFKANTransformer:
         history = []
         best_val_loss = float('inf')
         
-        for epoch in range(epochs):
+        # More epochs for larger windows
+        actual_epochs = max(10, int(epochs * (self.window / 252)))
+        
+        for epoch in range(actual_epochs):
             epoch_loss = 0
             n_batches = max(1, n_train // batch_size)
             
@@ -234,30 +246,22 @@ def compute_rbf_kan_forecast(
     config: Dict,
     window: int = 252
 ) -> Dict:
-    """Compute RBF-KAN-Transformer forecast for a single ticker with proper window handling."""
+    """Compute RBF-KAN-Transformer forecast for a single ticker."""
     returns = np.log(prices / prices.shift(1)).dropna().values
     
     if len(returns) < window:
-        return {"forecast": 0, "z_score": 0, "error": "Insufficient data"}
+        return {"forecast": 0, "z_score": 0, "error": f"Insufficient data for window {window}"}
     
     try:
-        # ── Use the EXACT window specified ──────────────────────────────────
+        # ── Use the EXACT window ────────────────────────────────────────────
         train_returns = returns[-window:]
         
-        # Dynamic lookback based on window size
-        # Smaller windows should use smaller lookbacks
-        lookback = min(
-            config.get("lookback", 30),
-            window // 4,  # 25% of window
-            len(train_returns) // 2
-        )
-        lookback = max(10, lookback)  # Minimum 10
-        
-        horizon = config.get("horizon", min(3, window // 20))
-        horizon = max(1, horizon)
+        # ── Dynamic lookback based on window ──────────────────────────────
+        lookback = max(10, int(window * 0.2))  # 20% of window
+        horizon = max(1, min(5, int(window * 0.02)))  # 2% of window
         
         if len(train_returns) < lookback + horizon + 10:
-            return {"forecast": 0, "z_score": 0, "error": "Insufficient data for sequences"}
+            return {"forecast": 0, "z_score": 0, "error": f"Insufficient sequences for window {window}"}
         
         # ── Create sequences ─────────────────────────────────────────────────
         X = []
@@ -275,7 +279,7 @@ def compute_rbf_kan_forecast(
             y.append(train_returns[i+horizon])
         
         if len(X) < 10:
-            return {"forecast": 0, "z_score": 0, "error": "Insufficient sequences"}
+            return {"forecast": 0, "z_score": 0, "error": f"Insufficient sequences ({len(X)}) for window {window}"}
         
         X = np.array(X)
         y = np.array(y)
@@ -285,31 +289,29 @@ def compute_rbf_kan_forecast(
         y_std = np.std(y) + 1e-6
         y_norm = (y - y_mean) / y_std
         
-        # Initialize model
-        model = RBFKANTransformer(config)
+        # ── Initialize model with window ────────────────────────────────────
+        model = RBFKANTransformer(config, window=window)
         
-        # Train with window-specific epochs
-        epochs = min(config.get("n_epochs", 30), max(10, window // 20))
-        
+        # ── Train ─────────────────────────────────────────────────────────────
+        epochs = max(10, int(window / 20))
         result = model.train(X, y_norm, epochs=epochs)
         
-        # Make forecast
+        # ── Make forecast ─────────────────────────────────────────────────────
         latest_seq = X[-1:].copy()
         forecast_norm = model.predict(latest_seq)[0, 0]
         forecast = forecast_norm * y_std + y_mean
         
-        # ── Window-specific momentum and volatility ────────────────────────
+        # ── Window-specific metrics ──────────────────────────────────────────
         # Use the window size for these calculations
-        st_window = min(10, window // 10)
-        mt_window = min(30, window // 5)
-        vol_window = min(60, window // 3)
+        st_window = max(5, int(window * 0.05))
+        mt_window = max(10, int(window * 0.1))
+        vol_window = max(10, int(window * 0.2))
         
         st_momentum = np.mean(train_returns[-st_window:]) if len(train_returns) >= st_window else 0
         mt_momentum = np.mean(train_returns[-mt_window:]) if len(train_returns) >= mt_window else 0
         volatility = np.std(train_returns[-vol_window:]) if len(train_returns) >= vol_window else 0
         
         # ── Window-specific signal weighting ──────────────────────────────
-        # Different windows weight different factors differently
         if window <= 63:
             # Short-term: emphasize recent momentum
             signal = (
@@ -382,7 +384,7 @@ def compute_universe_rbf_kan(
             "horizon_used": result.get("horizon_used", 0)
         }
     
-    # Normalize z-scores
+    # ── Normalize z-scores ──────────────────────────────────────────────────
     signal_values = np.array([r["signal"] for r in results.values()])
     
     if len(signal_values) > 1 and np.std(signal_values) > 1e-6:
