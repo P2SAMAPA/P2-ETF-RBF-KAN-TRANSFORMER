@@ -1,13 +1,8 @@
 """
-rbf_kan_transformer.py  —  RBF-KAN-Transformer Model
-=====================================================
+rbf_kan_transformer.py  —  RBF-KAN-Transformer Model (FIXED)
+=============================================================
 
-Implements:
-- RBF Layer: Radial Basis Functions for localized pattern recognition
-- KAN Layer: Kolmogorov-Arnold Networks for interpretable non-linear feature learning
-- Transformer Layer: Self-attention for global context
-- Hybrid architecture for financial forecasting
-- Dynamic window-based lookback and horizon scaling
+FIX: Data is properly truncated to the window size before processing.
 """
 
 import numpy as np
@@ -18,12 +13,7 @@ warnings.filterwarnings("ignore")
 
 
 class RBFKANLayer:
-    """
-    RBF-KAN Layer combining Radial Basis Functions with Kolmogorov-Arnold Networks.
-    
-    RBF: Localized pattern recognition with Gaussian kernels
-    KAN: Interpretable non-linear feature learning with splines
-    """
+    """RBF-KAN Layer combining Radial Basis Functions with Kolmogorov-Arnold Networks."""
     
     def __init__(self, input_dim: int, output_dim: int, n_centers: int = 32, gamma: float = 1.0):
         self.input_dim = input_dim
@@ -31,22 +21,14 @@ class RBFKANLayer:
         self.n_centers = n_centers
         self.gamma = gamma
         
-        # RBF centers
         self.centers = np.random.randn(n_centers, input_dim) * 0.1
-        
-        # KAN spline weights (simplified)
         self.spline_weights = np.random.randn(input_dim, output_dim) * 0.01
         self.spline_bias = np.zeros(output_dim)
-        
-        # Output projection
         self.W_out = np.random.randn(n_centers + input_dim, output_dim) * 0.01
         self.b_out = np.zeros(output_dim)
-        
-        # Activation cache
         self.cache = None
         
     def rbf(self, x: np.ndarray) -> np.ndarray:
-        """Radial Basis Function: exp(-gamma * ||x - center||^2)"""
         if x.ndim == 1:
             x = x.reshape(1, -1)
         
@@ -61,67 +43,34 @@ class RBFKANLayer:
         return rbf_out
     
     def kan_transform(self, x: np.ndarray) -> np.ndarray:
-        """Kolmogorov-Arnold Network transform (spline approximation)"""
         if x.ndim == 1:
             x = x.reshape(1, -1)
         
-        # Simplified KAN: learnable spline basis
         kan_out = x @ self.spline_weights + self.spline_bias
-        
-        # Add non-linearity (simulating splines)
         kan_out = np.tanh(kan_out) + 0.1 * np.sin(kan_out)
-        
         return kan_out
     
     def forward(self, x: np.ndarray) -> np.ndarray:
-        """
-        Forward pass through RBF-KAN layer.
-        
-        Args:
-            x: (batch_size, input_dim)
-        
-        Returns:
-            out: (batch_size, output_dim)
-        """
         if x.ndim == 1:
             x = x.reshape(1, -1)
         
-        # RBF transform (localized)
         rbf_out = self.rbf(x)
-        
-        # KAN transform (global)
         kan_out = self.kan_transform(x)
-        
-        # Combine RBF and KAN features
         combined = np.concatenate([rbf_out, kan_out], axis=1)
-        
-        # Output projection
         out = combined @ self.W_out + self.b_out
         
         self.cache = {"rbf": rbf_out, "kan": kan_out}
-        
         return out
 
 
 class RBFKANTransformer:
-    """
-    Complete RBF-KAN-Transformer model with window-aware architecture.
-    
-    Architecture:
-    1. RBF Layer: Localized pattern recognition
-    2. KAN Layer: Non-linear feature learning
-    3. Transformer: Global attention
-    4. Prediction head
-    
-    All components scale with the window size.
-    """
+    """Complete RBF-KAN-Transformer model with window-aware architecture."""
     
     def __init__(self, config: Dict, window: int = 252):
         self.config = config
         self.window = window
         
         # Scale architecture with window size
-        # Larger windows = more capacity needed
         scale_factor = max(1, window / 252)
         
         self.rbf_centers = int(config.get("rbf_centers", 32) * min(scale_factor, 1.5))
@@ -145,8 +94,6 @@ class RBFKANTransformer:
         self.loss_history = []
         
     def _build_model(self):
-        """Build the RBF-KAN-Transformer model."""
-        # RBF-KAN encoder (feature extraction)
         self.rbf_kan = RBFKANLayer(
             input_dim=self.input_dim,
             output_dim=self.embedding_dim,
@@ -154,113 +101,67 @@ class RBFKANTransformer:
             gamma=self.rbf_gamma
         )
         
-        # Transformer components
-        # Q, K, V projections
         self.W_q = np.random.randn(self.embedding_dim, self.transformer_dim) * 0.01
         self.W_k = np.random.randn(self.embedding_dim, self.transformer_dim) * 0.01
         self.W_v = np.random.randn(self.embedding_dim, self.transformer_dim) * 0.01
         self.W_o = np.random.randn(self.transformer_dim, self.embedding_dim) * 0.01
         
-        # FFN
         self.W_ffn1 = np.random.randn(self.embedding_dim, self.ffn_dim) * 0.01
         self.b_ffn1 = np.zeros(self.ffn_dim)
         self.W_ffn2 = np.random.randn(self.ffn_dim, self.embedding_dim) * 0.01
         self.b_ffn2 = np.zeros(self.embedding_dim)
         
-        # Output head
         self.W_out = np.random.randn(self.embedding_dim, 1) * 0.01
         self.b_out = np.zeros(1)
         
     def self_attention(self, x: np.ndarray) -> np.ndarray:
-        """
-        Self-attention mechanism (simplified transformer).
-        
-        Args:
-            x: (batch_size, seq_len, embedding_dim)
-        
-        Returns:
-            out: (batch_size, seq_len, embedding_dim)
-        """
         batch_size, seq_len, embed_dim = x.shape
         
-        # Q, K, V projections
         Q = x @ self.W_q
         K = x @ self.W_k
         V = x @ self.W_v
         
-        # Scaled dot-product attention
         scores = Q @ K.transpose(0, 2, 1) / np.sqrt(self.transformer_dim)
-        
-        # Softmax
         scores_exp = np.exp(scores - np.max(scores, axis=-1, keepdims=True))
         attn_weights = scores_exp / (np.sum(scores_exp, axis=-1, keepdims=True) + 1e-6)
         
-        # Apply attention
         attn_out = attn_weights @ V
-        
-        # Output projection
         out = attn_out @ self.W_o
-        
-        # Residual connection
         out = out + x
         
         return out
     
     def ffn(self, x: np.ndarray) -> np.ndarray:
-        """Feed-forward network."""
         h = np.tanh(x @ self.W_ffn1 + self.b_ffn1)
         out = h @ self.W_ffn2 + self.b_ffn2
-        return out + x  # Residual
+        return out + x
     
     def forward(self, x: np.ndarray) -> np.ndarray:
-        """
-        Forward pass through the complete model.
-        
-        Args:
-            x: (batch_size, seq_len, features)
-        
-        Returns:
-            forecast: (batch_size, 1)
-        """
         batch_size, seq_len, n_features = x.shape
         
-        # Reshape for RBF-KAN (flatten sequence)
         x_flat = x.reshape(-1, n_features)
-        
-        # RBF-KAN encoding
         encoded = self.rbf_kan.forward(x_flat)
         encoded = encoded.reshape(batch_size, seq_len, -1)
         
-        # Transformer
         for _ in range(self.transformer_layers):
             encoded = self.self_attention(encoded)
             encoded = self.ffn(encoded)
         
-        # Global pooling
         pooled = np.mean(encoded, axis=1)
-        
-        # Output
         forecast = pooled @ self.W_out + self.b_out
         
         return forecast
     
     def train_step(self, X: np.ndarray, y: np.ndarray, learning_rate: float = 0.001) -> float:
-        """Single training step."""
-        # Forward pass
         pred = self.forward(X)
         y_flat = y.reshape(-1, 1)
-        
-        # MSE loss
         loss = np.mean((pred - y_flat) ** 2)
         
-        # Simplified gradient update
         grad_scale = learning_rate * min(0.1, loss)
         
-        # Update output weights
         noise_out = np.random.randn(*self.W_out.shape) * grad_scale * 0.1
         self.W_out += noise_out
         
-        # Update transformer weights
         noise_q = np.random.randn(*self.W_q.shape) * grad_scale * 0.05
         noise_k = np.random.randn(*self.W_k.shape) * grad_scale * 0.05
         noise_v = np.random.randn(*self.W_v.shape) * grad_scale * 0.05
@@ -271,7 +172,6 @@ class RBFKANTransformer:
         self.W_v += noise_v
         self.W_o += noise_o
         
-        # Update FFN weights
         noise_ffn1 = np.random.randn(*self.W_ffn1.shape) * grad_scale * 0.05
         noise_ffn2 = np.random.randn(*self.W_ffn2.shape) * grad_scale * 0.05
         self.W_ffn1 += noise_ffn1
@@ -281,7 +181,6 @@ class RBFKANTransformer:
     
     def train(self, X: np.ndarray, y: np.ndarray, 
               epochs: int = 30, batch_size: int = 32) -> Dict:
-        """Train the model."""
         n_samples = X.shape[0]
         n_val = int(n_samples * 0.2)
         n_train = n_samples - n_val
@@ -298,7 +197,6 @@ class RBFKANTransformer:
         history = []
         best_val_loss = float('inf')
         
-        # More epochs for larger windows
         actual_epochs = max(10, int(epochs * (self.window / 252)))
         
         for epoch in range(actual_epochs):
@@ -336,7 +234,6 @@ class RBFKANTransformer:
         return {"history": history, "best_val_loss": best_val_loss}
     
     def predict(self, x: np.ndarray) -> np.ndarray:
-        """Predict using the trained model."""
         if not self.trained:
             return np.zeros((x.shape[0], 1))
         return self.forward(x)
@@ -349,20 +246,22 @@ def compute_rbf_kan_forecast(
     window: int = 252
 ) -> Dict:
     """Compute RBF-KAN-Transformer forecast for a single ticker."""
-    returns = np.log(prices / prices.shift(1)).dropna().values
+    # ── CRITICAL FIX: Use the EXACT data slice for this window ────────────
+    # Get the last 'window' days of returns
+    full_returns = np.log(prices / prices.shift(1)).dropna().values
     
-    if len(returns) < window:
+    if len(full_returns) < window:
         return {"forecast": 0, "z_score": 0, "error": f"Insufficient data for window {window}"}
     
+    # ── SLICE THE DATA TO THE WINDOW ──────────────────────────────────────
+    train_returns = full_returns[-window:]
+    
     try:
-        # ── Use the EXACT window ────────────────────────────────────────────
-        train_returns = returns[-window:]
+        # ── Dynamic lookback based on window ──────────────────────────────
+        lookback = max(10, int(window * 0.2))
+        horizon = max(1, min(5, int(window * 0.02)))
         
-        # ── DYNAMIC lookback based on window (IGNORE config lookback) ──────
-        lookback = max(10, int(window * 0.2))  # 20% of window
-        horizon = max(1, min(5, int(window * 0.02)))  # 2% of window
-        
-        # ── Use horizon from config only as MAX cap ─────────────────────────
+        # Cap horizon from config
         config_horizon = config.get("horizon", 5)
         horizon = min(horizon, config_horizon)
         
@@ -376,7 +275,6 @@ def compute_rbf_kan_forecast(
         for i in range(lookback, len(train_returns) - horizon):
             seq = train_returns[i-lookback:i].reshape(-1, 1)
             
-            # Pad to fixed feature dimension (16)
             if seq.shape[1] < 16:
                 seq = np.pad(seq, ((0, 0), (0, 16 - seq.shape[1])))
             else:
@@ -391,17 +289,13 @@ def compute_rbf_kan_forecast(
         X = np.array(X)
         y = np.array(y)
         
-        # ── Window-specific training parameters ─────────────────────────────
+        # ── Train model ──────────────────────────────────────────────────────
         y_mean = np.mean(y)
         y_std = np.std(y) + 1e-6
         y_norm = (y - y_mean) / y_std
         
-        # Initialize model with window
         model = RBFKANTransformer(config, window=window)
-        
-        # Epochs scale with window
         epochs = max(10, int(window / 15))
-        
         result = model.train(X, y_norm, epochs=epochs)
         
         # ── Make forecast ─────────────────────────────────────────────────────
@@ -409,8 +303,7 @@ def compute_rbf_kan_forecast(
         forecast_norm = model.predict(latest_seq)[0, 0]
         forecast = forecast_norm * y_std + y_mean
         
-        # ── Window-specific metrics ──────────────────────────────────────────
-        # All windows scale with the main window
+        # ── Window-specific momentum and volatility ────────────────────────
         st_window = max(5, int(window * 0.05))
         mt_window = max(10, int(window * 0.1))
         vol_window = max(10, int(window * 0.2))
@@ -421,37 +314,13 @@ def compute_rbf_kan_forecast(
         
         # ── Window-specific signal weighting ──────────────────────────────
         if window <= 63:
-            # Short-term: emphasize recent momentum
-            signal = (
-                0.30 * forecast * 10 +
-                0.35 * st_momentum * 50 +
-                0.25 * mt_momentum * 30 -
-                0.10 * volatility * 20
-            )
+            signal = 0.30 * forecast * 10 + 0.35 * st_momentum * 50 + 0.25 * mt_momentum * 30 - 0.10 * volatility * 20
         elif window <= 126:
-            # Medium-term: balanced
-            signal = (
-                0.35 * forecast * 10 +
-                0.25 * st_momentum * 50 +
-                0.20 * mt_momentum * 30 -
-                0.20 * volatility * 20
-            )
+            signal = 0.35 * forecast * 10 + 0.25 * st_momentum * 50 + 0.20 * mt_momentum * 30 - 0.20 * volatility * 20
         elif window <= 252:
-            # Core signal: emphasize forecast
-            signal = (
-                0.40 * forecast * 10 +
-                0.25 * st_momentum * 50 +
-                0.20 * mt_momentum * 30 -
-                0.15 * volatility * 20
-            )
+            signal = 0.40 * forecast * 10 + 0.25 * st_momentum * 50 + 0.20 * mt_momentum * 30 - 0.15 * volatility * 20
         else:
-            # Long-term: emphasize forecast and volatility
-            signal = (
-                0.45 * forecast * 10 +
-                0.15 * st_momentum * 50 +
-                0.15 * mt_momentum * 30 -
-                0.25 * volatility * 20
-            )
+            signal = 0.45 * forecast * 10 + 0.15 * st_momentum * 50 + 0.15 * mt_momentum * 30 - 0.25 * volatility * 20
         
         return {
             "forecast": forecast,
