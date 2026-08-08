@@ -52,13 +52,14 @@ def get_action(z_score: float) -> str:
 
 
 def process_window(args: Tuple) -> Dict:
+    """Process a single window-universe combination."""
     window, universe_name, available, prices_df, macro_df, config_dict = args
     
     try:
+        logger.info(f"  🔄 Starting {universe_name} @ {window}d with {len(available)} tickers")
         universe_prices = prices_df[available]
         result = compute_universe_rbf_kan(universe_prices, macro_df, config_dict, window)
         
-        # Log training status for debugging
         trained_count = sum(1 for r in result.values() if r.get("trained", False))
         total_count = len(result)
         logger.info(f"  📊 {universe_name} @ {window}d: {trained_count}/{total_count} tickers trained")
@@ -70,6 +71,9 @@ def process_window(args: Tuple) -> Dict:
             "error": None
         }
     except Exception as e:
+        logger.error(f"  ❌ {universe_name} @ {window}d failed: {e}")
+        import traceback
+        traceback.print_exc()
         return {
             "window": window,
             "universe": universe_name,
@@ -79,6 +83,7 @@ def process_window(args: Tuple) -> Dict:
 
 
 def run_trainer(hf_token: Optional[str] = None) -> Dict:
+    """Main training orchestrator."""
     token = hf_token or config.HF_TOKEN or os.environ.get("HF_TOKEN")
     if not token:
         logger.warning("HF_TOKEN not set — will skip HuggingFace upload.")
@@ -112,6 +117,7 @@ def run_trainer(hf_token: Optional[str] = None) -> Dict:
     for universe_name, tickers in config.UNIVERSES.items():
         available = [t for t in tickers if t in prices_df.columns]
         if not available:
+            logger.warning(f"⚠️ No tickers found for universe: {universe_name}")
             continue
 
         for window in windows:
@@ -149,6 +155,7 @@ def run_trainer(hf_token: Optional[str] = None) -> Dict:
                 universe_results[str(result["window"])] = result
 
         if not universe_results:
+            logger.warning(f"⚠️ No results for universe: {universe_name}")
             continue
 
         best_window_per_etf = {}
