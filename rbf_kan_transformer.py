@@ -1,5 +1,8 @@
 """
-rbf_kan_transformer.py  —  RBF-KAN-Transformer Model
+rbf_kan_transformer.py  —  RBF-KAN-Transformer Model (FIXED)
+=============================================================
+
+FIX: Proper dimension handling between RBF layer and transformer.
 """
 
 import numpy as np
@@ -24,6 +27,7 @@ class RBFKANLayer:
         self.centers = np.random.randn(n_centers, input_dim) * 0.1
         self.spline_weights = np.random.randn(input_dim, output_dim) * 0.01
         self.spline_bias = np.zeros(output_dim)
+        # FIX: W_out maps from (n_centers + input_dim) to output_dim
         self.W_out = np.random.randn(n_centers + input_dim, output_dim) * 0.01
         self.b_out = np.zeros(output_dim)
         self.cache = None
@@ -106,6 +110,7 @@ class RBFKANTransformer:
         self.loss_history = []
         
     def _build_model(self):
+        # RBF-KAN outputs embedding_dim
         self.rbf_kan = RBFKANLayer(
             input_dim=self.input_dim,
             output_dim=self.embedding_dim,
@@ -205,7 +210,6 @@ class RBFKANTransformer:
               epochs: int = 30, batch_size: int = 32) -> Dict:
         n_samples = X.shape[0]
         
-        # Ensure we have enough samples
         if n_samples < 10:
             logger.warning(f"Not enough samples for training: {n_samples}")
             return {"history": [], "best_val_loss": float('inf')}
@@ -286,11 +290,7 @@ def compute_rbf_kan_forecast(
     """Compute RBF-KAN-Transformer forecast for a single ticker."""
     full_returns = np.log(prices / prices.shift(1)).dropna().values
     
-    # Log data size for debugging
-    logger.debug(f"Window {window}: Returns length = {len(full_returns)}")
-    
     if len(full_returns) < window:
-        logger.warning(f"Window {window}: Insufficient data ({len(full_returns)} < {window})")
         return {"forecast": 0, "z_score": 0, "error": f"Insufficient data for window {window}"}
     
     try:
@@ -303,7 +303,6 @@ def compute_rbf_kan_forecast(
         horizon = min(horizon, config_horizon)
         
         if len(train_returns) < lookback + horizon + 10:
-            logger.warning(f"Window {window}: Not enough data for sequences")
             return {"forecast": 0, "z_score": 0, "error": f"Insufficient data for window {window}"}
         
         X = []
@@ -320,10 +319,7 @@ def compute_rbf_kan_forecast(
             X.append(seq)
             y.append(train_returns[i+horizon])
         
-        logger.debug(f"Window {window}: Created {len(X)} sequences")
-        
         if len(X) < 5:
-            logger.warning(f"Window {window}: Too few sequences ({len(X)})")
             return {"forecast": 0, "z_score": 0, "error": f"Insufficient sequences ({len(X)}) for window {window}"}
         
         X = np.array(X)
@@ -355,7 +351,6 @@ def compute_rbf_kan_forecast(
         mt_momentum = np.mean(train_returns[-mt_window:]) if len(train_returns) >= mt_window else 0
         volatility = np.std(train_returns[-vol_window:]) if len(train_returns) >= vol_window else 0
         
-        # Signal calculation
         if window <= 63:
             signal = 0.30 * forecast * 10 + 0.35 * st_momentum * 50 + 0.25 * mt_momentum * 30 - 0.10 * volatility * 20
         elif window <= 126:
@@ -414,7 +409,6 @@ def compute_universe_rbf_kan(
             "trained": result.get("trained", False)
         }
     
-    # Normalize z-scores
     signal_values = np.array([r["signal"] for r in results.values()])
     
     if len(signal_values) > 1 and np.std(signal_values) > 1e-6:
