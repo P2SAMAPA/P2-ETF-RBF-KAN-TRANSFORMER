@@ -58,6 +58,11 @@ def process_window(args: Tuple) -> Dict:
         universe_prices = prices_df[available]
         result = compute_universe_rbf_kan(universe_prices, macro_df, config_dict, window)
         
+        # Log training status for debugging
+        trained_count = sum(1 for r in result.values() if r.get("trained", False))
+        total_count = len(result)
+        logger.info(f"  📊 {universe_name} @ {window}d: {trained_count}/{total_count} tickers trained")
+        
         return {
             "window": window,
             "universe": universe_name,
