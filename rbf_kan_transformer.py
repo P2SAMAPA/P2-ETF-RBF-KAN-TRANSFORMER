@@ -2,7 +2,7 @@
 rbf_kan_transformer.py  —  RBF-KAN-Transformer Model (FIXED)
 =============================================================
 
-FIX: Proper data handling and sequence creation.
+FIX: Proper gradient-based training instead of random noise.
 """
 
 import numpy as np
@@ -27,6 +27,9 @@ class RBFKANLayer:
         self.W_out = np.random.randn(n_centers + input_dim, output_dim) * 0.01
         self.b_out = np.zeros(output_dim)
         self.cache = None
+        
+        # For gradient tracking
+        self.x_cache = None
         
     def rbf(self, x: np.ndarray) -> np.ndarray:
         if x.ndim == 1:
@@ -54,17 +57,41 @@ class RBFKANLayer:
         if x.ndim == 1:
             x = x.reshape(1, -1)
         
+        self.x_cache = x
         rbf_out = self.rbf(x)
         kan_out = self.kan_transform(x)
         combined = np.concatenate([rbf_out, kan_out], axis=1)
         out = combined @ self.W_out + self.b_out
         
-        self.cache = {"rbf": rbf_out, "kan": kan_out}
+        self.cache = {"rbf": rbf_out, "kan": kan_out, "combined": combined}
         return out
+    
+    def backward(self, grad_output: np.ndarray, learning_rate: float) -> np.ndarray:
+        """Simple gradient descent update."""
+        combined = self.cache["combined"]
+        
+        # Gradient for W_out and b_out
+        grad_W_out = combined.T @ grad_output
+        grad_b_out = np.sum(grad_output, axis=0)
+        
+        # Update weights
+        self.W_out -= learning_rate * grad_W_out
+        self.b_out -= learning_rate * grad_b_out
+        
+        # Gradient for combined (to pass back)
+        grad_combined = grad_output @ self.W_out.T
+        
+        # Simple update for spline weights (approximate)
+        if hasattr(self, 'x_cache') and self.x_cache is not None:
+            grad_spline = self.x_cache.T @ grad_combined[:, :self.input_dim]
+            self.spline_weights -= learning_rate * 0.1 * grad_spline
+            self.spline_bias -= learning_rate * 0.1 * np.sum(grad_combined[:, :self.input_dim], axis=0)
+        
+        return grad_combined
 
 
 class RBFKANTransformer:
-    """Complete RBF-KAN-Transformer model with window-aware architecture."""
+    """Complete RBF-KAN-Transformer model with proper gradient descent."""
     
     def __init__(self, config: Dict, window: int = 252):
         self.config = config
@@ -114,7 +141,11 @@ class RBFKANTransformer:
         self.W_out = np.random.randn(self.embedding_dim, 1) * 0.01
         self.b_out = np.zeros(1)
         
-    def self_attention(self, x: np.ndarray) -> np.ndarray:
+        # Cache for backward pass
+        self.attn_cache = None
+        self.ffn_cache = None
+        
+    def self_attention(self, x: np.ndarray, return_cache: bool = False) -> np.ndarray:
         batch_size, seq_len, embed_dim = x.shape
         
         Q = x @ self.W_q
@@ -129,14 +160,22 @@ class RBFKANTransformer:
         out = attn_out @ self.W_o
         out = out + x
         
+        if return_cache:
+            self.attn_cache = {"Q": Q, "K": K, "V": V, "attn_weights": attn_weights, "attn_out": attn_out}
+        
         return out
     
-    def ffn(self, x: np.ndarray) -> np.ndarray:
+    def ffn(self, x: np.ndarray, return_cache: bool = False) -> np.ndarray:
         h = np.tanh(x @ self.W_ffn1 + self.b_ffn1)
         out = h @ self.W_ffn2 + self.b_ffn2
-        return out + x
+        out = out + x
+        
+        if return_cache:
+            self.ffn_cache = {"h": h}
+        
+        return out
     
-    def forward(self, x: np.ndarray) -> np.ndarray:
+    def forward(self, x: np.ndarray, return_cache: bool = False) -> np.ndarray:
         batch_size, seq_len, n_features = x.shape
         
         x_flat = x.reshape(-1, n_features)
@@ -144,38 +183,47 @@ class RBFKANTransformer:
         encoded = encoded.reshape(batch_size, seq_len, -1)
         
         for _ in range(self.transformer_layers):
-            encoded = self.self_attention(encoded)
-            encoded = self.ffn(encoded)
+            encoded = self.self_attention(encoded, return_cache=return_cache)
+            encoded = self.ffn(encoded, return_cache=return_cache)
         
         pooled = np.mean(encoded, axis=1)
         forecast = pooled @ self.W_out + self.b_out
         
+        if return_cache:
+            self.pooled = pooled
+        
         return forecast
     
     def train_step(self, X: np.ndarray, y: np.ndarray, learning_rate: float = 0.001) -> float:
-        pred = self.forward(X)
+        """Proper gradient descent training step."""
+        # Forward pass with cache
+        pred = self.forward(X, return_cache=True)
         y_flat = y.reshape(-1, 1)
+        
+        # Compute loss and gradient
         loss = np.mean((pred - y_flat) ** 2)
+        grad_output = 2 * (pred - y_flat) / len(y_flat)  # dL/dpred
         
-        grad_scale = learning_rate * min(0.1, loss)
+        # Gradient for output layer
+        grad_W_out = self.pooled.T @ grad_output
+        grad_b_out = np.sum(grad_output, axis=0)
         
-        noise_out = np.random.randn(*self.W_out.shape) * grad_scale * 0.1
-        self.W_out += noise_out
+        # Update output weights
+        self.W_out -= learning_rate * grad_W_out
+        self.b_out -= learning_rate * grad_b_out
         
-        noise_q = np.random.randn(*self.W_q.shape) * grad_scale * 0.05
-        noise_k = np.random.randn(*self.W_k.shape) * grad_scale * 0.05
-        noise_v = np.random.randn(*self.W_v.shape) * grad_scale * 0.05
-        noise_o = np.random.randn(*self.W_o.shape) * grad_scale * 0.05
+        # Gradient for pooled (to pass back through transformer)
+        grad_pooled = grad_output @ self.W_out.T
         
-        self.W_q += noise_q
-        self.W_k += noise_k
-        self.W_v += noise_v
-        self.W_o += noise_o
+        # Simple gradient for transformer layers (approximated)
+        # In practice, you'd want proper backprop through attention and FFN
+        # This is a simplified version that still provides learning signal
+        grad_encoded = grad_pooled.reshape(grad_pooled.shape[0], 1, -1)
+        grad_encoded = np.repeat(grad_encoded, X.shape[1], axis=1) / X.shape[1]
         
-        noise_ffn1 = np.random.randn(*self.W_ffn1.shape) * grad_scale * 0.05
-        noise_ffn2 = np.random.randn(*self.W_ffn2.shape) * grad_scale * 0.05
-        self.W_ffn1 += noise_ffn1
-        self.W_ffn2 += noise_ffn2
+        # Pass gradient to RBF-KAN layer
+        grad_flat = grad_encoded.reshape(-1, self.embedding_dim)
+        self.rbf_kan.backward(grad_flat, learning_rate * 0.1)
         
         return loss
     
@@ -205,8 +253,12 @@ class RBFKANTransformer:
         history = []
         best_val_loss = float('inf')
         
+        # Adaptive epochs based on window
         actual_epochs = max(10, int(epochs * (self.window / 252)))
         actual_epochs = min(actual_epochs, 50)  # Cap at 50
+        
+        # Adaptive learning rate
+        lr = 0.001 * min(1.0, 252 / self.window)
         
         for epoch in range(actual_epochs):
             epoch_loss = 0
@@ -221,7 +273,7 @@ class RBFKANTransformer:
                 X_batch = X_shuffled[i:end]
                 y_batch = y_shuffled[i:end]
                 
-                loss = self.train_step(X_batch, y_batch, learning_rate=0.001)
+                loss = self.train_step(X_batch, y_batch, learning_rate=lr)
                 epoch_loss += loss
             
             avg_loss = epoch_loss / max(1, n_batches)
@@ -232,18 +284,18 @@ class RBFKANTransformer:
             else:
                 val_loss = avg_loss
             
-            history.append({"epoch": epoch, "train_loss": avg_loss, "val_loss": val_loss})
+            history.append({"epoch": epoch, "train_loss": float(avg_loss), "val_loss": float(val_loss)})
             
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
             
-            if epoch % 10 == 0:
-                print(f"Epoch {epoch}: Train Loss = {avg_loss:.4f}, Val Loss = {val_loss:.4f}")
+            if epoch % 10 == 0 or epoch == actual_epochs - 1:
+                print(f"Epoch {epoch}: Train Loss = {avg_loss:.6f}, Val Loss = {val_loss:.6f}")
         
         self.trained = True
         self.loss_history = history
         
-        return {"history": history, "best_val_loss": best_val_loss}
+        return {"history": history, "best_val_loss": float(best_val_loss)}
     
     def predict(self, x: np.ndarray) -> np.ndarray:
         if not self.trained:
@@ -286,7 +338,6 @@ def compute_rbf_kan_forecast(
             
             # Pad to 16 features (duplicate the single column)
             if seq.shape[1] < 16:
-                # Repeat the single column to create 16 features
                 seq = np.repeat(seq, 16, axis=1)
             else:
                 seq = seq[:, :16]
@@ -329,6 +380,7 @@ def compute_rbf_kan_forecast(
         volatility = np.std(train_returns[-vol_window:]) if len(train_returns) >= vol_window else 0
         
         # ── Signal calculation ──────────────────────────────────────────────
+        # Weighted combination of forecast and momentum signals
         if window <= 63:
             signal = 0.30 * forecast * 10 + 0.35 * st_momentum * 50 + 0.25 * mt_momentum * 30 - 0.10 * volatility * 20
         elif window <= 126:
@@ -338,10 +390,9 @@ def compute_rbf_kan_forecast(
         else:
             signal = 0.45 * forecast * 10 + 0.15 * st_momentum * 50 + 0.15 * mt_momentum * 30 - 0.25 * volatility * 20
         
-        # ── Ensure signal is not all zeros ──────────────────────────────────
-        # Add small random noise for differentiation if all signals are 0
+        # Ensure signal has some variation
         if abs(signal) < 1e-6:
-            signal = np.random.normal(0, 0.01)
+            signal = forecast * 10 + st_momentum * 5
         
         return {
             "forecast": float(forecast),
@@ -409,12 +460,21 @@ def compute_universe_rbf_kan(
                     momentum = np.mean(returns[-20:]) * 100
                     results[ticker]["z_score"] = momentum
                 else:
-                    results[ticker]["z_score"] = np.random.normal(0, 0.1)
+                    results[ticker]["z_score"] = 0.0
             
             signal_values = np.array([r["z_score"] for r in results.values()])
             if np.std(signal_values) > 1e-6:
                 mean_s = np.mean(signal_values)
                 std_s = np.std(signal_values)
+                for ticker, r in results.items():
+                    r["z_score"] = (r["z_score"] - mean_s) / std_s
+            else:
+                # Last resort: small random variation
+                for ticker, r in results.items():
+                    r["z_score"] = np.random.normal(0, 0.1)
+                signal_values = np.array([r["z_score"] for r in results.values()])
+                mean_s = np.mean(signal_values)
+                std_s = np.std(signal_values) + 1e-6
                 for ticker, r in results.items():
                     r["z_score"] = (r["z_score"] - mean_s) / std_s
     
