@@ -90,11 +90,10 @@ TRAINING = {
 # ── Forecasting Parameters ──────────────────────────────────────────────────
 
 FORECAST = {
-    "horizon": 5,              # Forecast horizon (days ahead)
-    "lookback": 60,            # Lookback window for features
+    "horizon": 5,              # Forecast horizon (days ahead) - USED AS FALLBACK ONLY
+    # "lookback": 60,          # REMOVED - Now calculated dynamically based on window
     "n_forecasts": 100,        # Number of forecasts
 }
-
 
 # ── Macro Signals ────────────────────────────────────────────────────────────
 
