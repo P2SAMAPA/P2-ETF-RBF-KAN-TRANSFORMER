@@ -1,8 +1,5 @@
 """
-rbf_kan_transformer.py  —  RBF-KAN-Transformer Model (FIXED)
-=============================================================
-
-FIX: Proper gradient-based training instead of random noise.
+rbf_kan_transformer.py  —  RBF-KAN-Transformer Model
 """
 
 import numpy as np
@@ -10,6 +7,9 @@ import pandas as pd
 from typing import Dict, List, Tuple, Optional
 import warnings
 warnings.filterwarnings("ignore")
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class RBFKANLayer:
@@ -27,8 +27,6 @@ class RBFKANLayer:
         self.W_out = np.random.randn(n_centers + input_dim, output_dim) * 0.01
         self.b_out = np.zeros(output_dim)
         self.cache = None
-        
-        # For gradient tracking
         self.x_cache = None
         
     def rbf(self, x: np.ndarray) -> np.ndarray:
@@ -67,21 +65,16 @@ class RBFKANLayer:
         return out
     
     def backward(self, grad_output: np.ndarray, learning_rate: float) -> np.ndarray:
-        """Simple gradient descent update."""
         combined = self.cache["combined"]
         
-        # Gradient for W_out and b_out
         grad_W_out = combined.T @ grad_output
         grad_b_out = np.sum(grad_output, axis=0)
         
-        # Update weights
         self.W_out -= learning_rate * grad_W_out
         self.b_out -= learning_rate * grad_b_out
         
-        # Gradient for combined (to pass back)
         grad_combined = grad_output @ self.W_out.T
         
-        # Simple update for spline weights (approximate)
         if hasattr(self, 'x_cache') and self.x_cache is not None:
             grad_spline = self.x_cache.T @ grad_combined[:, :self.input_dim]
             self.spline_weights -= learning_rate * 0.1 * grad_spline
@@ -91,29 +84,21 @@ class RBFKANLayer:
 
 
 class RBFKANTransformer:
-    """Complete RBF-KAN-Transformer model with proper gradient descent."""
-    
     def __init__(self, config: Dict, window: int = 252):
         self.config = config
         self.window = window
         
-        # Scale architecture with window size
         scale_factor = max(1, window / 252)
         
         self.rbf_centers = int(config.get("rbf_centers", 32) * min(scale_factor, 1.5))
         self.rbf_gamma = config.get("rbf_gamma", 1.0) / min(scale_factor, 1.5)
-        self.kan_hidden_dim = int(config.get("kan_hidden_dim", 64) * min(scale_factor, 1.5))
-        self.kan_layers = config.get("kan_layers", 2)
-        self.transformer_dim = int(config.get("transformer_dim", 64) * min(scale_factor, 1.5))
-        self.transformer_heads = max(2, int(config.get("transformer_heads", 4) * min(scale_factor, 1.2)))
-        self.transformer_layers = max(2, int(config.get("transformer_layers", 2) * min(scale_factor, 1.3)))
         self.embedding_dim = int(config.get("embedding_dim", 64) * min(scale_factor, 1.5))
+        self.transformer_dim = int(config.get("transformer_dim", 64) * min(scale_factor, 1.5))
+        self.transformer_layers = max(2, int(config.get("transformer_layers", 2) * min(scale_factor, 1.3)))
         self.ffn_dim = int(config.get("ffn_dim", 128) * min(scale_factor, 1.5))
         self.input_dim = 16
         
-        # Lookback scales with window (20% of window)
         self.lookback = max(10, int(window * 0.2))
-        # Horizon scales with window (2% of window)
         self.horizon = max(1, min(10, int(window * 0.02)))
         
         self._build_model()
@@ -141,9 +126,9 @@ class RBFKANTransformer:
         self.W_out = np.random.randn(self.embedding_dim, 1) * 0.01
         self.b_out = np.zeros(1)
         
-        # Cache for backward pass
         self.attn_cache = None
         self.ffn_cache = None
+        self.pooled = None
         
     def self_attention(self, x: np.ndarray, return_cache: bool = False) -> np.ndarray:
         batch_size, seq_len, embed_dim = x.shape
@@ -195,33 +180,22 @@ class RBFKANTransformer:
         return forecast
     
     def train_step(self, X: np.ndarray, y: np.ndarray, learning_rate: float = 0.001) -> float:
-        """Proper gradient descent training step."""
-        # Forward pass with cache
         pred = self.forward(X, return_cache=True)
         y_flat = y.reshape(-1, 1)
         
-        # Compute loss and gradient
         loss = np.mean((pred - y_flat) ** 2)
-        grad_output = 2 * (pred - y_flat) / len(y_flat)  # dL/dpred
+        grad_output = 2 * (pred - y_flat) / len(y_flat)
         
-        # Gradient for output layer
         grad_W_out = self.pooled.T @ grad_output
         grad_b_out = np.sum(grad_output, axis=0)
         
-        # Update output weights
         self.W_out -= learning_rate * grad_W_out
         self.b_out -= learning_rate * grad_b_out
         
-        # Gradient for pooled (to pass back through transformer)
         grad_pooled = grad_output @ self.W_out.T
-        
-        # Simple gradient for transformer layers (approximated)
-        # In practice, you'd want proper backprop through attention and FFN
-        # This is a simplified version that still provides learning signal
         grad_encoded = grad_pooled.reshape(grad_pooled.shape[0], 1, -1)
         grad_encoded = np.repeat(grad_encoded, X.shape[1], axis=1) / X.shape[1]
         
-        # Pass gradient to RBF-KAN layer
         grad_flat = grad_encoded.reshape(-1, self.embedding_dim)
         self.rbf_kan.backward(grad_flat, learning_rate * 0.1)
         
@@ -231,7 +205,9 @@ class RBFKANTransformer:
               epochs: int = 30, batch_size: int = 32) -> Dict:
         n_samples = X.shape[0]
         
+        # Ensure we have enough samples
         if n_samples < 10:
+            logger.warning(f"Not enough samples for training: {n_samples}")
             return {"history": [], "best_val_loss": float('inf')}
         
         n_val = int(n_samples * 0.2)
@@ -253,11 +229,9 @@ class RBFKANTransformer:
         history = []
         best_val_loss = float('inf')
         
-        # Adaptive epochs based on window
         actual_epochs = max(10, int(epochs * (self.window / 252)))
-        actual_epochs = min(actual_epochs, 50)  # Cap at 50
+        actual_epochs = min(actual_epochs, 50)
         
-        # Adaptive learning rate
         lr = 0.001 * min(1.0, 252 / self.window)
         
         for epoch in range(actual_epochs):
@@ -290,7 +264,7 @@ class RBFKANTransformer:
                 best_val_loss = val_loss
             
             if epoch % 10 == 0 or epoch == actual_epochs - 1:
-                print(f"Epoch {epoch}: Train Loss = {avg_loss:.6f}, Val Loss = {val_loss:.6f}")
+                logger.info(f"  Epoch {epoch}/{actual_epochs}: Train Loss = {avg_loss:.6f}, Val Loss = {val_loss:.6f}")
         
         self.trained = True
         self.loss_history = history
@@ -312,14 +286,16 @@ def compute_rbf_kan_forecast(
     """Compute RBF-KAN-Transformer forecast for a single ticker."""
     full_returns = np.log(prices / prices.shift(1)).dropna().values
     
+    # Log data size for debugging
+    logger.debug(f"Window {window}: Returns length = {len(full_returns)}")
+    
     if len(full_returns) < window:
+        logger.warning(f"Window {window}: Insufficient data ({len(full_returns)} < {window})")
         return {"forecast": 0, "z_score": 0, "error": f"Insufficient data for window {window}"}
     
     try:
-        # ── Slice data to window ────────────────────────────────────────────
         train_returns = full_returns[-window:]
         
-        # ── Dynamic lookback and horizon ────────────────────────────────────
         lookback = max(10, int(window * 0.2))
         horizon = max(1, min(5, int(window * 0.02)))
         
@@ -327,16 +303,15 @@ def compute_rbf_kan_forecast(
         horizon = min(horizon, config_horizon)
         
         if len(train_returns) < lookback + horizon + 10:
+            logger.warning(f"Window {window}: Not enough data for sequences")
             return {"forecast": 0, "z_score": 0, "error": f"Insufficient data for window {window}"}
         
-        # ── Create sequences ─────────────────────────────────────────────────
         X = []
         y = []
         
         for i in range(lookback, len(train_returns) - horizon):
             seq = train_returns[i-lookback:i].reshape(-1, 1)
             
-            # Pad to 16 features (duplicate the single column)
             if seq.shape[1] < 16:
                 seq = np.repeat(seq, 16, axis=1)
             else:
@@ -345,24 +320,26 @@ def compute_rbf_kan_forecast(
             X.append(seq)
             y.append(train_returns[i+horizon])
         
+        logger.debug(f"Window {window}: Created {len(X)} sequences")
+        
         if len(X) < 5:
+            logger.warning(f"Window {window}: Too few sequences ({len(X)})")
             return {"forecast": 0, "z_score": 0, "error": f"Insufficient sequences ({len(X)}) for window {window}"}
         
         X = np.array(X)
         y = np.array(y)
         
-        # ── Train model ──────────────────────────────────────────────────────
         y_mean = np.mean(y)
         y_std = np.std(y) + 1e-6
         y_norm = (y - y_mean) / y_std
         
         model = RBFKANTransformer(config, window=window)
         epochs = max(10, int(window / 15))
-        epochs = min(epochs, 50)  # Cap at 50
+        epochs = min(epochs, 50)
         
+        logger.info(f"  Training {window}d: {len(X)} samples, {epochs} epochs")
         result = model.train(X, y_norm, epochs=epochs)
         
-        # ── Make forecast ─────────────────────────────────────────────────────
         latest_seq = X[-1:].copy()
         if model.trained:
             forecast_norm = model.predict(latest_seq)[0, 0]
@@ -370,7 +347,6 @@ def compute_rbf_kan_forecast(
         else:
             forecast = np.mean(y)
         
-        # ── Window-specific metrics ──────────────────────────────────────────
         st_window = max(5, int(window * 0.05))
         mt_window = max(10, int(window * 0.1))
         vol_window = max(10, int(window * 0.2))
@@ -379,8 +355,7 @@ def compute_rbf_kan_forecast(
         mt_momentum = np.mean(train_returns[-mt_window:]) if len(train_returns) >= mt_window else 0
         volatility = np.std(train_returns[-vol_window:]) if len(train_returns) >= vol_window else 0
         
-        # ── Signal calculation ──────────────────────────────────────────────
-        # Weighted combination of forecast and momentum signals
+        # Signal calculation
         if window <= 63:
             signal = 0.30 * forecast * 10 + 0.35 * st_momentum * 50 + 0.25 * mt_momentum * 30 - 0.10 * volatility * 20
         elif window <= 126:
@@ -390,7 +365,6 @@ def compute_rbf_kan_forecast(
         else:
             signal = 0.45 * forecast * 10 + 0.15 * st_momentum * 50 + 0.15 * mt_momentum * 30 - 0.25 * volatility * 20
         
-        # Ensure signal has some variation
         if abs(signal) < 1e-6:
             signal = forecast * 10 + st_momentum * 5
         
@@ -407,6 +381,9 @@ def compute_rbf_kan_forecast(
             "error": None
         }
     except Exception as e:
+        logger.error(f"Window {window}: Error - {e}")
+        import traceback
+        traceback.print_exc()
         return {"forecast": 0, "z_score": 0, "signal": 0, "error": str(e)}
 
 
@@ -418,6 +395,8 @@ def compute_universe_rbf_kan(
 ) -> Dict:
     """Compute RBF-KAN-Transformer for all ETFs in a universe."""
     results = {}
+    
+    logger.info(f"  Processing universe with {len(prices_df.columns)} tickers at {window}d")
     
     for ticker in prices_df.columns:
         prices = prices_df[ticker]
@@ -435,7 +414,7 @@ def compute_universe_rbf_kan(
             "trained": result.get("trained", False)
         }
     
-    # ── Normalize z-scores ──────────────────────────────────────────────────
+    # Normalize z-scores
     signal_values = np.array([r["signal"] for r in results.values()])
     
     if len(signal_values) > 1 and np.std(signal_values) > 1e-6:
@@ -444,7 +423,6 @@ def compute_universe_rbf_kan(
         for ticker, r in results.items():
             r["z_score"] = (r["signal"] - mean_s) / std_s
     else:
-        # Fallback: use forecast
         forecasts = np.array([r["forecast"] for r in results.values()])
         if len(forecasts) > 1 and np.std(forecasts) > 1e-6:
             mean_f = np.mean(forecasts)
@@ -452,7 +430,6 @@ def compute_universe_rbf_kan(
             for ticker, r in results.items():
                 r["z_score"] = (r["forecast"] - mean_f) / std_f
         else:
-            # Final fallback: use momentum
             for ticker in results.keys():
                 prices = prices_df[ticker]
                 returns = np.log(prices / prices.shift(1)).dropna().values
@@ -468,14 +445,8 @@ def compute_universe_rbf_kan(
                 std_s = np.std(signal_values)
                 for ticker, r in results.items():
                     r["z_score"] = (r["z_score"] - mean_s) / std_s
-            else:
-                # Last resort: small random variation
-                for ticker, r in results.items():
-                    r["z_score"] = np.random.normal(0, 0.1)
-                signal_values = np.array([r["z_score"] for r in results.values()])
-                mean_s = np.mean(signal_values)
-                std_s = np.std(signal_values) + 1e-6
-                for ticker, r in results.items():
-                    r["z_score"] = (r["z_score"] - mean_s) / std_s
+    
+    trained_count = sum(1 for r in results.values() if r.get("trained", False))
+    logger.info(f"  ✅ {window}d: {trained_count}/{len(results)} tickers trained")
     
     return results
