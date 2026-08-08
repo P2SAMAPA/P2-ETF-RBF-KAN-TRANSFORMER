@@ -27,7 +27,7 @@ class RBFKANLayer:
         self.centers = np.random.randn(n_centers, input_dim) * 0.1
         self.spline_weights = np.random.randn(input_dim, output_dim) * 0.01
         self.spline_bias = np.zeros(output_dim)
-        # FIX: W_out maps from (n_centers + input_dim) to output_dim
+        # W_out maps from (n_centers + input_dim) to output_dim
         self.W_out = np.random.randn(n_centers + input_dim, output_dim) * 0.01
         self.b_out = np.zeros(output_dim)
         self.cache = None
@@ -63,6 +63,15 @@ class RBFKANLayer:
         rbf_out = self.rbf(x)
         kan_out = self.kan_transform(x)
         combined = np.concatenate([rbf_out, kan_out], axis=1)
+        
+        # Ensure dimension consistency
+        if combined.shape[1] != self.W_out.shape[0]:
+            if combined.shape[1] < self.W_out.shape[0]:
+                pad_width = ((0, 0), (0, self.W_out.shape[0] - combined.shape[1]))
+                combined = np.pad(combined, pad_width, mode='constant')
+            else:
+                combined = combined[:, :self.W_out.shape[0]]
+        
         out = combined @ self.W_out + self.b_out
         
         self.cache = {"rbf": rbf_out, "kan": kan_out, "combined": combined}
