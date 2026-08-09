@@ -1,8 +1,8 @@
 """
-rbf_kan_transformer.py  —  RBF-KAN-Transformer Model (FIXED)
-=============================================================
+rbf_kan_transformer.py  —  RBF-KAN-Transformer Model (OPTIMIZED)
+===============================================================
 
-FIX: Proper gradient shapes in backward pass.
+FIX: Parallel processing within universes for faster training.
 """
 
 import numpy as np
@@ -11,6 +11,8 @@ from typing import Dict, List, Tuple, Optional
 import warnings
 warnings.filterwarnings("ignore")
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -86,18 +88,12 @@ class RBFKANLayer:
         
         grad_combined = grad_output @ self.W_out.T
         
-        # Split gradient for RBF and KAN parts
         rbf_grad = grad_combined[:, :self.n_centers]
         kan_grad = grad_combined[:, self.n_centers:]
         
-        # Update spline weights - only if shapes match
         if hasattr(self, 'x_cache') and self.x_cache is not None:
-            # For KAN part: we need to backprop through the KAN transform
-            # Simplified: use the gradient directly to update spline weights
             if kan_grad.shape[1] == self.output_dim:
-                # Update spline weights using gradient from kan output
                 grad_spline = self.x_cache.T @ kan_grad
-                # Ensure shape matches spline_weights
                 if grad_spline.shape == self.spline_weights.shape:
                     self.spline_weights -= learning_rate * 0.1 * grad_spline
                     self.spline_bias -= learning_rate * 0.1 * np.sum(kan_grad, axis=0)
@@ -298,6 +294,17 @@ class RBFKANTransformer:
         return self.forward(x)
 
 
+def compute_single_forecast(ticker: str, prices: pd.Series, macro_df: pd.DataFrame, 
+                            config: Dict, window: int) -> Tuple[str, Dict]:
+    """Compute forecast for a single ticker - used for parallel processing."""
+    try:
+        result = compute_rbf_kan_forecast(prices, macro_df, config, window)
+        return ticker, result
+    except Exception as e:
+        logger.error(f"  Error on {ticker} @ {window}d: {e}")
+        return ticker, {"forecast": 0, "z_score": 0, "signal": 0, "error": str(e)}
+
+
 def compute_rbf_kan_forecast(
     prices: pd.Series,
     macro_df: pd.DataFrame,
@@ -350,7 +357,8 @@ def compute_rbf_kan_forecast(
         epochs = max(10, int(window / 15))
         epochs = min(epochs, 50)
         
-        logger.info(f"  Training {window}d: {len(X)} samples, {epochs} epochs")
+        # Only log per ticker for debugging - reduced verbosity
+        # logger.info(f"  Training {window}d: {len(X)} samples, {epochs} epochs")
         result = model.train(X, y_norm, epochs=epochs)
         
         latest_seq = X[-1:].copy()
@@ -403,29 +411,57 @@ def compute_universe_rbf_kan(
     prices_df: pd.DataFrame,
     macro_df: pd.DataFrame,
     config: Dict,
-    window: int = 252
+    window: int = 252,
+    max_workers: int = 4
 ) -> Dict:
-    """Compute RBF-KAN-Transformer for all ETFs in a universe."""
+    """Compute RBF-KAN-Transformer for all ETFs in a universe with parallel processing."""
     results = {}
     
-    logger.info(f"  Processing universe with {len(prices_df.columns)} tickers at {window}d")
+    tickers = list(prices_df.columns)
+    logger.info(f"  Processing {len(tickers)} tickers at {window}d with {max_workers} workers")
     
-    for ticker in prices_df.columns:
-        prices = prices_df[ticker]
-        result = compute_rbf_kan_forecast(prices, macro_df, config, window)
+    # Use ThreadPoolExecutor for parallel processing within the universe
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        for ticker in tickers:
+            prices = prices_df[ticker]
+            future = executor.submit(compute_single_forecast, ticker, prices, macro_df, config, window)
+            futures[future] = ticker
         
-        results[ticker] = {
-            "forecast": result.get("forecast", 0),
-            "z_score": result.get("signal", 0),
-            "signal": result.get("signal", 0),
-            "loss": result.get("loss", 0),
-            "n_epochs": result.get("n_epochs", 0),
-            "window_used": result.get("window_used", window),
-            "lookback_used": result.get("lookback_used", 0),
-            "horizon_used": result.get("horizon_used", 0),
-            "trained": result.get("trained", False)
-        }
+        completed = 0
+        for future in as_completed(futures):
+            ticker = futures[future]
+            try:
+                ticker, result = future.result(timeout=600)  # 10 minute timeout per ticker
+                results[ticker] = {
+                    "forecast": result.get("forecast", 0),
+                    "z_score": result.get("signal", 0),
+                    "signal": result.get("signal", 0),
+                    "loss": result.get("loss", 0),
+                    "n_epochs": result.get("n_epochs", 0),
+                    "window_used": result.get("window_used", window),
+                    "lookback_used": result.get("lookback_used", 0),
+                    "horizon_used": result.get("horizon_used", 0),
+                    "trained": result.get("trained", False)
+                }
+                completed += 1
+                if completed % 5 == 0:
+                    logger.info(f"  Progress {window}d: {completed}/{len(tickers)} tickers done")
+            except Exception as e:
+                logger.error(f"  Failed on {ticker}: {e}")
+                results[ticker] = {
+                    "forecast": 0,
+                    "z_score": 0,
+                    "signal": 0,
+                    "loss": 0,
+                    "n_epochs": 0,
+                    "window_used": window,
+                    "lookback_used": 0,
+                    "horizon_used": 0,
+                    "trained": False
+                }
     
+    # Normalize z-scores
     signal_values = np.array([r["signal"] for r in results.values()])
     
     if len(signal_values) > 1 and np.std(signal_values) > 1e-6:
