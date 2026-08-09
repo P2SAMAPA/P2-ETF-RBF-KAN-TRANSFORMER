@@ -1,8 +1,8 @@
 """
-rbf_kan_transformer.py  —  RBF-KAN-Transformer Model (OPTIMIZED)
-===============================================================
+rbf_kan_transformer.py  —  RBF-KAN-Transformer Model (ULTRA-OPTIMIZED)
+=====================================================================
 
-FIX: Parallel processing within universes for faster training.
+FIX: Reduced training time with adaptive epochs and early stopping.
 """
 
 import numpy as np
@@ -12,13 +12,12 @@ import warnings
 warnings.filterwarnings("ignore")
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
 
 logger = logging.getLogger(__name__)
 
 
 class RBFKANLayer:
-    """RBF-KAN Layer combining Radial Basis Functions with Kolmogorov-Arnold Networks."""
+    """RBF-KAN Layer - Optimized for speed."""
     
     def __init__(self, input_dim: int, output_dim: int, n_centers: int = 32, gamma: float = 1.0):
         self.input_dim = input_dim
@@ -26,10 +25,11 @@ class RBFKANLayer:
         self.n_centers = n_centers
         self.gamma = gamma
         
-        self.centers = np.random.randn(n_centers, input_dim) * 0.1
-        self.spline_weights = np.random.randn(input_dim, output_dim) * 0.01
+        # Smaller initialization for faster convergence
+        self.centers = np.random.randn(n_centers, input_dim) * 0.05
+        self.spline_weights = np.random.randn(input_dim, output_dim) * 0.005
         self.spline_bias = np.zeros(output_dim)
-        self.W_out = np.random.randn(n_centers + input_dim, output_dim) * 0.01
+        self.W_out = np.random.randn(n_centers + input_dim, output_dim) * 0.005
         self.b_out = np.zeros(output_dim)
         self.cache = None
         self.x_cache = None
@@ -88,10 +88,8 @@ class RBFKANLayer:
         
         grad_combined = grad_output @ self.W_out.T
         
-        rbf_grad = grad_combined[:, :self.n_centers]
-        kan_grad = grad_combined[:, self.n_centers:]
-        
         if hasattr(self, 'x_cache') and self.x_cache is not None:
+            kan_grad = grad_combined[:, self.n_centers:]
             if kan_grad.shape[1] == self.output_dim:
                 grad_spline = self.x_cache.T @ kan_grad
                 if grad_spline.shape == self.spline_weights.shape:
@@ -102,22 +100,36 @@ class RBFKANLayer:
 
 
 class RBFKANTransformer:
-    def __init__(self, config: Dict, window: int = 252):
+    def __init__(self, config: Dict, window: int = 252, universe_size: int = 30):
         self.config = config
         self.window = window
+        self.universe_size = universe_size
         
+        # Scale model complexity based on universe size and window
         scale_factor = max(1, window / 252)
+        complexity_factor = max(0.5, min(1.0, 30 / max(universe_size, 1)))
         
-        self.rbf_centers = int(config.get("rbf_centers", 32) * min(scale_factor, 1.5))
-        self.rbf_gamma = config.get("rbf_gamma", 1.0) / min(scale_factor, 1.5)
-        self.embedding_dim = int(config.get("embedding_dim", 64) * min(scale_factor, 1.5))
-        self.transformer_dim = int(config.get("transformer_dim", 64) * min(scale_factor, 1.5))
-        self.transformer_layers = max(2, int(config.get("transformer_layers", 2) * min(scale_factor, 1.3)))
-        self.ffn_dim = int(config.get("ffn_dim", 128) * min(scale_factor, 1.5))
+        # Reduce complexity for large universes
+        self.rbf_centers = int(config.get("rbf_centers", 32) * min(scale_factor, 1.2) * complexity_factor)
+        self.rbf_centers = max(8, min(self.rbf_centers, 32))
+        
+        self.rbf_gamma = config.get("rbf_gamma", 1.0) / min(scale_factor, 1.2)
+        self.embedding_dim = int(config.get("embedding_dim", 64) * min(scale_factor, 1.2) * complexity_factor)
+        self.embedding_dim = max(16, min(self.embedding_dim, 64))
+        
+        self.transformer_dim = int(config.get("transformer_dim", 64) * min(scale_factor, 1.2) * complexity_factor)
+        self.transformer_dim = max(16, min(self.transformer_dim, 64))
+        
+        self.transformer_layers = max(1, int(config.get("transformer_layers", 2) * complexity_factor))
+        self.transformer_layers = min(self.transformer_layers, 2)
+        
+        self.ffn_dim = int(config.get("ffn_dim", 128) * complexity_factor)
+        self.ffn_dim = max(32, min(self.ffn_dim, 128))
+        
         self.input_dim = 16
         
         self.lookback = max(10, int(window * 0.2))
-        self.horizon = max(1, min(10, int(window * 0.02)))
+        self.horizon = max(1, min(5, int(window * 0.02)))
         
         self._build_model()
         self.trained = False
@@ -131,17 +143,17 @@ class RBFKANTransformer:
             gamma=self.rbf_gamma
         )
         
-        self.W_q = np.random.randn(self.embedding_dim, self.transformer_dim) * 0.01
-        self.W_k = np.random.randn(self.embedding_dim, self.transformer_dim) * 0.01
-        self.W_v = np.random.randn(self.embedding_dim, self.transformer_dim) * 0.01
-        self.W_o = np.random.randn(self.transformer_dim, self.embedding_dim) * 0.01
+        self.W_q = np.random.randn(self.embedding_dim, self.transformer_dim) * 0.005
+        self.W_k = np.random.randn(self.embedding_dim, self.transformer_dim) * 0.005
+        self.W_v = np.random.randn(self.embedding_dim, self.transformer_dim) * 0.005
+        self.W_o = np.random.randn(self.transformer_dim, self.embedding_dim) * 0.005
         
-        self.W_ffn1 = np.random.randn(self.embedding_dim, self.ffn_dim) * 0.01
+        self.W_ffn1 = np.random.randn(self.embedding_dim, self.ffn_dim) * 0.005
         self.b_ffn1 = np.zeros(self.ffn_dim)
-        self.W_ffn2 = np.random.randn(self.ffn_dim, self.embedding_dim) * 0.01
+        self.W_ffn2 = np.random.randn(self.ffn_dim, self.embedding_dim) * 0.005
         self.b_ffn2 = np.zeros(self.embedding_dim)
         
-        self.W_out = np.random.randn(self.embedding_dim, 1) * 0.01
+        self.W_out = np.random.randn(self.embedding_dim, 1) * 0.005
         self.b_out = np.zeros(1)
         
         self.attn_cache = None
@@ -224,7 +236,6 @@ class RBFKANTransformer:
         n_samples = X.shape[0]
         
         if n_samples < 10:
-            logger.warning(f"Not enough samples for training: {n_samples}")
             return {"history": [], "best_val_loss": float('inf')}
         
         n_val = int(n_samples * 0.2)
@@ -245,11 +256,20 @@ class RBFKANTransformer:
         
         history = []
         best_val_loss = float('inf')
+        patience = 3
+        patience_counter = 0
         
-        actual_epochs = max(10, int(epochs * (self.window / 252)))
-        actual_epochs = min(actual_epochs, 50)
+        # Adaptive epochs based on window and universe size
+        if self.window >= 504:
+            actual_epochs = min(epochs, 15)  # Max 15 for 504d
+        elif self.window >= 252:
+            actual_epochs = min(epochs, 20)  # Max 20 for 252d
+        else:
+            actual_epochs = min(epochs, 10)  # Max 10 for smaller windows
         
-        lr = 0.001 * min(1.0, 252 / self.window)
+        actual_epochs = max(5, actual_epochs)  # Minimum 5 epochs
+        
+        lr = 0.002 * min(1.0, 252 / self.window)  # Higher learning rate
         
         for epoch in range(actual_epochs):
             epoch_loss = 0
@@ -277,10 +297,16 @@ class RBFKANTransformer:
             
             history.append({"epoch": epoch, "train_loss": float(avg_loss), "val_loss": float(val_loss)})
             
+            # Early stopping
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    break
             
-            if epoch % 10 == 0 or epoch == actual_epochs - 1:
+            if epoch % 5 == 0 or epoch == actual_epochs - 1:
                 logger.info(f"  Epoch {epoch}/{actual_epochs}: Train Loss = {avg_loss:.6f}, Val Loss = {val_loss:.6f}")
         
         self.trained = True
@@ -295,10 +321,10 @@ class RBFKANTransformer:
 
 
 def compute_single_forecast(ticker: str, prices: pd.Series, macro_df: pd.DataFrame, 
-                            config: Dict, window: int) -> Tuple[str, Dict]:
-    """Compute forecast for a single ticker - used for parallel processing."""
+                            config: Dict, window: int, universe_size: int) -> Tuple[str, Dict]:
+    """Compute forecast for a single ticker."""
     try:
-        result = compute_rbf_kan_forecast(prices, macro_df, config, window)
+        result = compute_rbf_kan_forecast(prices, macro_df, config, window, universe_size)
         return ticker, result
     except Exception as e:
         logger.error(f"  Error on {ticker} @ {window}d: {e}")
@@ -309,7 +335,8 @@ def compute_rbf_kan_forecast(
     prices: pd.Series,
     macro_df: pd.DataFrame,
     config: Dict,
-    window: int = 252
+    window: int = 252,
+    universe_size: int = 30
 ) -> Dict:
     """Compute RBF-KAN-Transformer forecast for a single ticker."""
     full_returns = np.log(prices / prices.shift(1)).dropna().values
@@ -353,12 +380,11 @@ def compute_rbf_kan_forecast(
         y_std = np.std(y) + 1e-6
         y_norm = (y - y_mean) / y_std
         
-        model = RBFKANTransformer(config, window=window)
-        epochs = max(10, int(window / 15))
-        epochs = min(epochs, 50)
+        # Pass universe_size to model for complexity scaling
+        model = RBFKANTransformer(config, window=window, universe_size=universe_size)
+        epochs = max(5, int(window / 20))  # Reduced epochs
+        epochs = min(epochs, 20)  # Cap at 20
         
-        # Only log per ticker for debugging - reduced verbosity
-        # logger.info(f"  Training {window}d: {len(X)} samples, {epochs} epochs")
         result = model.train(X, y_norm, epochs=epochs)
         
         latest_seq = X[-1:].copy()
@@ -402,8 +428,6 @@ def compute_rbf_kan_forecast(
         }
     except Exception as e:
         logger.error(f"Window {window}: Error - {e}")
-        import traceback
-        traceback.print_exc()
         return {"forecast": 0, "z_score": 0, "signal": 0, "error": str(e)}
 
 
@@ -412,27 +436,28 @@ def compute_universe_rbf_kan(
     macro_df: pd.DataFrame,
     config: Dict,
     window: int = 252,
-    max_workers: int = 4
+    max_workers: int = 8
 ) -> Dict:
     """Compute RBF-KAN-Transformer for all ETFs in a universe with parallel processing."""
     results = {}
     
     tickers = list(prices_df.columns)
-    logger.info(f"  Processing {len(tickers)} tickers at {window}d with {max_workers} workers")
+    universe_size = len(tickers)
     
-    # Use ThreadPoolExecutor for parallel processing within the universe
+    logger.info(f"  Processing {universe_size} tickers at {window}d with {max_workers} workers")
+    
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {}
         for ticker in tickers:
             prices = prices_df[ticker]
-            future = executor.submit(compute_single_forecast, ticker, prices, macro_df, config, window)
+            future = executor.submit(compute_single_forecast, ticker, prices, macro_df, config, window, universe_size)
             futures[future] = ticker
         
         completed = 0
         for future in as_completed(futures):
             ticker = futures[future]
             try:
-                ticker, result = future.result(timeout=600)  # 10 minute timeout per ticker
+                ticker, result = future.result(timeout=300)  # 5 minute timeout
                 results[ticker] = {
                     "forecast": result.get("forecast", 0),
                     "z_score": result.get("signal", 0),
@@ -445,7 +470,7 @@ def compute_universe_rbf_kan(
                     "trained": result.get("trained", False)
                 }
                 completed += 1
-                if completed % 5 == 0:
+                if completed % 10 == 0:
                     logger.info(f"  Progress {window}d: {completed}/{len(tickers)} tickers done")
             except Exception as e:
                 logger.error(f"  Failed on {ticker}: {e}")
