@@ -52,13 +52,28 @@ def get_action(z_score: float) -> str:
 
 
 def process_window(args: Tuple) -> Dict:
-    """Process a single window-universe combination."""
+    """Process a single window-universe combination with parallel workers inside."""
     window, universe_name, available, prices_df, macro_df, config_dict = args
     
     try:
         logger.info(f"  🔄 Starting {universe_name} @ {window}d with {len(available)} tickers")
         universe_prices = prices_df[available]
-        result = compute_universe_rbf_kan(universe_prices, macro_df, config_dict, window)
+        
+        # Use more workers for larger universes
+        if len(available) >= 30:
+            workers = 8
+        elif len(available) >= 15:
+            workers = 6
+        else:
+            workers = 4
+            
+        result = compute_universe_rbf_kan(
+            universe_prices, 
+            macro_df, 
+            config_dict, 
+            window,
+            max_workers=workers
+        )
         
         trained_count = sum(1 for r in result.values() if r.get("trained", False))
         total_count = len(result)
@@ -111,8 +126,10 @@ def run_trainer(hf_token: Optional[str] = None) -> Dict:
 
     tasks = []
     windows = config.WINDOWS
-    max_workers = max(1, int(mp.cpu_count() * 0.75))
-    logger.info(f"🚀 Using {max_workers} parallel workers")
+    
+    # Use more parallel workers at the top level
+    max_workers = max(2, int(mp.cpu_count() * 0.75))
+    logger.info(f"🚀 Using {max_workers} parallel workers for universes")
 
     for universe_name, tickers in config.UNIVERSES.items():
         available = [t for t in tickers if t in prices_df.columns]
@@ -132,7 +149,7 @@ def run_trainer(hf_token: Optional[str] = None) -> Dict:
         for future in as_completed(future_to_task):
             completed += 1
             try:
-                result = future.result(timeout=1800)
+                result = future.result(timeout=3600)  # 1 hour timeout per window
                 if result.get("error"):
                     logger.warning(f"   ⚠️ {result['universe']} @ {result['window']}d failed: {result['error']}")
                     continue
